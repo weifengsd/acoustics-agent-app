@@ -9,6 +9,12 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import plotly.graph_objects as go
 import plotly.express as px
+import importlib
+
+# Force reload of pyacoustics submodules to reflect recent fixes
+for mod_name in list(sys.modules.keys()):
+    if mod_name.startswith("pyacoustics"):
+        importlib.reload(sys.modules[mod_name])
 
 # 1. Setup Robust Path Resolution for pyacoustics
 app_dir = Path(__file__).resolve().parent
@@ -132,120 +138,88 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# 4. Standard Environmental Presets Definition
-PRESETS = {
-    "Munk Sound Channel (Deep Sea)": {
-        "project": "Munk Channel Deep Sea",
-        "frequency": 50.0,
-        "depth": 5000.0,
-        "source_depth": 1000.0,
-        "ssp_type": "c-linear",
-        "ssp_data": [
-            {"depth": 0.0, "c": 1548.5},
-            {"depth": 200.0, "c": 1530.0},
-            {"depth": 500.0, "c": 1508.0},
-            {"depth": 1000.0, "c": 1490.0},
-            {"depth": 1200.0, "c": 1488.0},  # Channel Axis
-            {"depth": 1500.0, "c": 1492.0},
-            {"depth": 2000.0, "c": 1500.0},
-            {"depth": 3000.0, "c": 1515.0},
-            {"depth": 4000.0, "c": 1530.0},
-            {"depth": 5000.0, "c": 1550.0},
-        ],
-        "bottom_type": "acousto-elastic",
-        "bottom_c_p": 1600.0,
-        "bottom_density": 1.8,
-        "bottom_attenuation": 0.5,
-        "receivers_max_range": 50000.0,
-        "solver_type": "bellhop",
-        "angles": [-20.0, 20.0],
-        "num_beams": 400,
-        "step_size": 10.0,
-    },
-    "Pekeris Waveguide (Shallow Sea)": {
-        "project": "Pekeris Shallow Water",
-        "frequency": 200.0,
-        "depth": 200.0,
-        "source_depth": 300.0, # Adjusted lower relative to depth
-        "ssp_type": "c-linear",
-        "ssp_data": [
-            {"depth": 0.0, "c": 1500.0},
-            {"depth": 200.0, "c": 1500.0},
-        ],
-        "bottom_type": "acousto-elastic",
-        "bottom_c_p": 1650.0,
-        "bottom_density": 1.9,
-        "bottom_attenuation": 0.8,
-        "receivers_max_range": 10000.0,
-        "solver_type": "bellhop",
-        "angles": [-45.0, 45.0],
-        "num_beams": 200,
-        "step_size": 1.0,
-    },
-    "Surface Duct (Mixed Layer)": {
-        "project": "Surface Duct Waveguide",
-        "frequency": 300.0,
-        "depth": 1000.0,
-        "source_depth": 20.0,
-        "ssp_type": "c-linear",
-        "ssp_data": [
-            {"depth": 0.0, "c": 1525.0},
-            {"depth": 50.0, "c": 1526.0},
-            {"depth": 100.0, "c": 1523.0},
-            {"depth": 150.0, "c": 1495.0},
-            {"depth": 250.0, "c": 1485.0},
-            {"depth": 1000.0, "c": 1490.0},
-        ],
-        "bottom_type": "acousto-elastic",
-        "bottom_c_p": 1700.0,
-        "bottom_density": 2.0,
-        "bottom_attenuation": 0.3,
-        "receivers_max_range": 25000.0,
-        "solver_type": "bellhop",
-        "angles": [-15.0, 15.0],
-        "num_beams": 300,
-        "step_size": 2.0,
-    },
-}
+# 4. Standard Environmental Presets Logic
+def load_all_presets():
+    presets_dir = app_dir / "configs"
+    if not presets_dir.exists():
+        return {}
+    
+    all_presets = {}
+    for yaml_file in presets_dir.glob("*.yaml"):
+        try:
+            with open(yaml_file, 'r') as f:
+                data = yaml.safe_load(f)
+                # Use the project name or filename as key
+                name = data.get("project", yaml_file.stem)
+                all_presets[name] = data
+        except Exception as e:
+            print(f"Error loading preset {yaml_file}: {e}")
+    return all_presets
 
-# Fix preset source depths to avoid out-of-bounds at initialization
-for preset_name, preset_vals in PRESETS.items():
-    if preset_vals["source_depth"] >= preset_vals["depth"]:
-        preset_vals["source_depth"] = preset_vals["depth"] * 0.15
+PRESETS = load_all_presets()
+
+# Helper to flatten the nested YAML structure for the app session state
+def flatten_preset(p):
+    flattened = {
+        "project": p.get("project", "New Project"),
+        "frequency": p.get("frequency", 100.0),
+        "depth": p.get("environment", {}).get("bottom", {}).get("depth", 1000.0),
+        "source_depth": p.get("geometry", {}).get("source", {}).get("depths", [50.0])[0],
+        "ssp_type": p.get("environment", {}).get("ssp", {}).get("type", "c-linear"),
+        "ssp_data": p.get("environment", {}).get("ssp", {}).get("data", []),
+        "bottom_c_p": p.get("environment", {}).get("bottom", {}).get("c_p", 1600.0),
+        "bottom_density": p.get("environment", {}).get("bottom", {}).get("density", 1.8),
+        "bottom_attenuation": p.get("environment", {}).get("bottom", {}).get("attenuation_p", 0.5),
+        "receivers_max_range": p.get("geometry", {}).get("receivers", {}).get("ranges", [0, 10000])[-1],
+        "solver_type": p.get("solver", {}).get("type", "bellhop"),
+        "angles": p.get("solver", {}).get("angles", [-20.0, 20.0]),
+        "num_beams": p.get("solver", {}).get("num_beams", 400),
+        "step_size": p.get("solver", {}).get("step_size", 10.0),
+    }
+    return flattened
+
+# Initialize Session State with default or first preset
+DEFAULT_PRESET_NAME = "Munk Sound Channel (Deep Sea)"
+if DEFAULT_PRESET_NAME not in PRESETS and PRESETS:
+    DEFAULT_PRESET_NAME = list(PRESETS.keys())[0]
+
+default_data = flatten_preset(PRESETS.get(DEFAULT_PRESET_NAME, {}))
+
 
 # Initialize Session State
 if "preset" not in st.session_state:
-    st.session_state.preset = "Munk Sound Channel (Deep Sea)"
+    st.session_state.preset = DEFAULT_PRESET_NAME
 if "project_name" not in st.session_state:
-    st.session_state.project_name = "Munk Channel Deep Sea"
+    st.session_state.project_name = default_data["project"]
 if "frequency" not in st.session_state:
-    st.session_state.frequency = 50.0
+    st.session_state.frequency = default_data["frequency"]
 if "depth" not in st.session_state:
-    st.session_state.depth = 5000.0
+    st.session_state.depth = default_data["depth"]
 if "source_depth" not in st.session_state:
-    st.session_state.source_depth = 1000.0
+    st.session_state.source_depth = default_data["source_depth"]
 if "ssp_type" not in st.session_state:
-    st.session_state.ssp_type = "c-linear"
+    st.session_state.ssp_type = default_data["ssp_type"]
 if "ssp_df" not in st.session_state:
-    st.session_state.ssp_df = pd.DataFrame(PRESETS["Munk Sound Channel (Deep Sea)"]["ssp_data"])
+    st.session_state.ssp_df = pd.DataFrame(default_data["ssp_data"])
 if "bottom_c_p" not in st.session_state:
-    st.session_state.bottom_c_p = 1600.0
+    st.session_state.bottom_c_p = default_data["bottom_c_p"]
 if "bottom_density" not in st.session_state:
-    st.session_state.bottom_density = 1.8
+    st.session_state.bottom_density = default_data["bottom_density"]
 if "bottom_attenuation" not in st.session_state:
-    st.session_state.bottom_attenuation = 0.5
+    st.session_state.bottom_attenuation = default_data["bottom_attenuation"]
 if "receivers_max_range" not in st.session_state:
-    st.session_state.receivers_max_range = 50000.0
+    st.session_state.receivers_max_range = default_data["receivers_max_range"]
 if "solver_type" not in st.session_state:
-    st.session_state.solver_type = "bellhop"
+    st.session_state.solver_type = default_data["solver_type"]
 if "angle_min" not in st.session_state:
-    st.session_state.angle_min = -20.0
+    st.session_state.angle_min = default_data["angles"][0]
 if "angle_max" not in st.session_state:
-    st.session_state.angle_max = 20.0
+    st.session_state.angle_max = default_data["angles"][1]
 if "num_beams" not in st.session_state:
-    st.session_state.num_beams = 400
+    st.session_state.num_beams = default_data["num_beams"]
 if "step_size" not in st.session_state:
-    st.session_state.step_size = 10.0
+    st.session_state.step_size = default_data["step_size"]
+
 if "simulation_results" not in st.session_state:
     st.session_state.simulation_results = None
 if "simulation_stats" not in st.session_state:
@@ -258,7 +232,9 @@ if "shd_computed_tl" not in st.session_state:
 # Function to Load Presets into Session State
 def load_preset(name):
     if name in PRESETS:
-        p = PRESETS[name]
+        p_raw = PRESETS[name]
+        p = flatten_preset(p_raw)
+        
         st.session_state.project_name = p["project"]
         st.session_state.frequency = p["frequency"]
         st.session_state.depth = p["depth"]
@@ -277,6 +253,7 @@ def load_preset(name):
         st.session_state.simulation_results = None
         st.session_state.simulation_stats = None
         st.session_state.shd_computed_tl = None
+
 
 # Header HTML
 st.markdown("""
@@ -581,16 +558,23 @@ with col_viz:
     # Run Simulation Trigger Buttons
     c_btn1, c_btn2 = st.columns(2)
     with c_btn1:
-        run_ray = st.button("✨ Run Ray Tracing Simulation", type="primary", use_container_width=True)
+        if st.session_state.solver_type == "bellhop":
+            run_sim = st.button("✨ Run Ray Tracing Simulation", type="primary", use_container_width=True)
+        else:
+            run_sim = st.button("✨ Run Normal Mode Simulation", type="primary", use_container_width=True)
+            
     with c_btn2:
-        run_coherent = st.button("🌈 Compute Coherent TL Field", use_container_width=True)
+        if st.session_state.solver_type == "bellhop":
+            run_coherent = st.button("🌈 Compute Coherent TL Field", use_container_width=True)
+        else:
+            run_coherent = False # Normal modes already computes field
         
-    # Execution Logic for Ray Tracing
-    if run_ray:
+    # Execution Logic for Primary Simulation
+    if run_sim:
         if not import_success:
             st.error("Cannot run simulation: `pyacoustics` module is not loaded correctly.")
         else:
-            with st.spinner("Executing acoustic solvers... Please wait..."):
+            with st.spinner(f"Executing {st.session_state.solver_type} solver... Please wait..."):
                 try:
                     # Initialize simulation with dict config
                     sim = Simulation(sim_config_dict, mode=exec_mode)
@@ -602,27 +586,44 @@ with col_viz:
                     st.session_state.simulation_results = results
                     
                     # Compute stats
-                    if exec_mode == "native":
-                        total_rays = len(results)
-                        points_per_ray = [len(r[0]) for r in results]
-                        avg_points = sum(points_per_ray) / total_rays if total_rays > 0 else 0
-                        
-                        st.session_state.simulation_stats = {
-                            "status": "Success",
-                            "execution_time": exec_time,
-                            "rays_traced": total_rays,
-                            "avg_steps": avg_points,
-                            "solver": st.session_state.solver_type,
-                            "mode": exec_mode
-                        }
+                    if st.session_state.solver_type == "bellhop":
+                        if exec_mode == "native":
+                            total_rays = len(results)
+                            points_per_ray = [len(r[0]) for r in results]
+                            avg_points = sum(points_per_ray) / total_rays if total_rays > 0 else 0
+                            
+                            st.session_state.simulation_stats = {
+                                "status": "Success",
+                                "execution_time": exec_time,
+                                "rays_traced": total_rays,
+                                "avg_steps": avg_points,
+                                "solver": st.session_state.solver_type,
+                                "mode": exec_mode
+                            }
+                        else:
+                            st.session_state.simulation_stats = {
+                                "status": "Success",
+                                "execution_time": exec_time,
+                                "message": "Legacy simulation executed successfully.",
+                                "solver": st.session_state.solver_type,
+                                "mode": exec_mode
+                            }
                     else:
+                        # Normal Modes stats
                         st.session_state.simulation_stats = {
                             "status": "Success",
                             "execution_time": exec_time,
-                            "message": "Legacy simulation executed successfully.",
                             "solver": st.session_state.solver_type,
                             "mode": exec_mode
                         }
+                        # For Kraken, also populate coherent TL cache automatically
+                        st.session_state.shd_computed_tl = {
+                            "TL": results["tl_grid"],
+                            "r_grid": results["r_bins"],
+                            "z_grid": results["z_bins"],
+                            "exec_time": exec_time
+                        }
+                        
                     st.success(f"Simulation completed in {exec_time:.4f} seconds!")
                 except Exception as ex:
                     st.error(f"Error during simulation: {str(ex)}")
@@ -668,263 +669,226 @@ with col_viz:
 
     # Visualization Output Workspace Tab System
     st.write("### 📊 Visualization Workspace")
-    tab_rays, tab_tl_grid, tab_tl_coherent, tab_arrivals, tab_yaml = st.tabs([
-        "📈 Ray Paths", 
-        "🌋 Transmission Loss (Ray Density)", 
-        "🌈 Coherent TL", 
-        "🔔 Arrivals Analysis",
-        "📄 YAML Configuration"
-    ])
-
-    with tab_rays:
-        if st.session_state.simulation_results is not None and st.session_state.solver_type == "bellhop":
-            # Dynamic Plotly Ray Plot
-            st.markdown("#### Interactive Ray Paths (Plotly)")
-            fig_rays_plotly = go.Figure()
-            
-            # Surface Boundary Line
-            fig_rays_plotly.add_trace(go.Scatter(
-                x=[0, st.session_state.receivers_max_range / 1000.0],
-                y=[0, 0],
-                mode="lines",
-                line=dict(color="#3B82F6", width=2, dash="dash"),
-                name="Sea Surface"
-            ))
-            
-            # Bottom Boundary Line
-            fig_rays_plotly.add_trace(go.Scatter(
-                x=[0, st.session_state.receivers_max_range / 1000.0],
-                y=[st.session_state.depth, st.session_state.depth],
-                mode="lines",
-                line=dict(color="#B45309", width=3),
-                fill="toself",
-                fillcolor="rgba(180, 83, 9, 0.15)",
-                name="Sea Bottom"
-            ))
-            
-            # Plot individual rays
-            ray_data = st.session_state.simulation_results
-            # Subsample rays if there are too many to keep Plotly performant
-            max_plot_rays = 150
-            step = max(1, len(ray_data) // max_plot_rays)
-            
-            for idx, ray in enumerate(ray_data[::step]):
-                r_path, z_path, amp_path = ray
+    
+    if st.session_state.solver_type == "bellhop":
+        tab_list = ["📈 Ray Paths", "🌋 Transmission Loss (Ray Density)", "🌈 Coherent TL", "🔔 Arrivals Analysis", "📄 YAML Configuration"]
+        tabs = st.tabs(tab_list)
+        tab_rays, tab_tl_grid, tab_tl_coherent, tab_arrivals, tab_yaml = tabs
+        
+        with tab_rays:
+            if st.session_state.simulation_results is not None:
+                # Dynamic Plotly Ray Plot
+                st.markdown("#### Interactive Ray Paths (Plotly)")
+                fig_rays_plotly = go.Figure()
+                
+                # Boundaries
                 fig_rays_plotly.add_trace(go.Scatter(
-                    x=r_path / 1000.0,
-                    y=z_path,
-                    mode="lines",
-                    line=dict(color="#cbd5e1", width=0.5),
-                    opacity=0.5,
-                    hoverinfo="none",
-                    showlegend=False
+                    x=[0, st.session_state.receivers_max_range / 1000.0], y=[0, 0],
+                    mode="lines", line=dict(color="#3B82F6", width=2, dash="dash"), name="Sea Surface"
                 ))
-            
-            # Plot Source location
-            fig_rays_plotly.add_trace(go.Scatter(
-                x=[0],
-                y=[st.session_state.source_depth],
-                mode="markers",
-                marker=dict(color="#EF4444", size=10, symbol="star"),
-                name="Acoustic Source"
-            ))
-            
-            fig_rays_plotly.update_layout(
-                xaxis=dict(title=dict(text="Range (km)", font=dict(color="#94a3b8")), gridcolor="rgba(255,255,255,0.05)", tickfont=dict(color="#94a3b8")),
-                yaxis=dict(title=dict(text="Depth (meters)", font=dict(color="#94a3b8")), range=[st.session_state.depth * 1.05, 0], gridcolor="rgba(255,255,255,0.05)", tickfont=dict(color="#94a3b8")),
-                paper_bgcolor="rgba(0,0,0,0)",
-                plot_bgcolor="rgba(0,0,0,0)",
-                legend=dict(font=dict(color="#e2e8f0")),
-                height=500,
-                margin=dict(l=10, r=10, t=20, b=10)
-            )
-            st.plotly_chart(fig_rays_plotly, use_container_width=True)
-            
-            # Static High Fidelity Matplotlib Ray Plot
-            st.markdown("#### High-Fidelity Static Plot (Matplotlib)")
-            try:
+                fig_rays_plotly.add_trace(go.Scatter(
+                    x=[0, st.session_state.receivers_max_range / 1000.0], y=[st.session_state.depth, st.session_state.depth],
+                    mode="lines", line=dict(color="#B45309", width=3), fill="toself", fillcolor="rgba(180, 83, 9, 0.15)", name="Sea Bottom"
+                ))
+                
+                # Rays
+                ray_data = st.session_state.simulation_results
+                step = max(1, len(ray_data) // 150)
+                for ray in ray_data[::step]:
+                    r_path, z_path, _ = ray
+                    fig_rays_plotly.add_trace(go.Scatter(
+                        x=r_path / 1000.0, y=z_path, mode="lines",
+                        line=dict(color="#cbd5e1", width=0.5), opacity=0.5, showlegend=False
+                    ))
+                
+                # Source
+                fig_rays_plotly.add_trace(go.Scatter(
+                    x=[0], y=[st.session_state.source_depth], mode="markers",
+                    marker=dict(color="#EF4444", size=10, symbol="star"), name="Acoustic Source"
+                ))
+                
+                fig_rays_plotly.update_layout(
+                    xaxis=dict(title="Range (km)"), yaxis=dict(title="Depth (m)", range=[st.session_state.depth * 1.05, 0]),
+                    paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", height=500
+                )
+                st.plotly_chart(fig_rays_plotly, use_container_width=True)
+                
+                # Static Matplotlib
+                st.markdown("#### High-Fidelity Static Plot (Matplotlib)")
                 sim = Simulation(sim_config_dict, mode=exec_mode)
                 sim.ray_paths = st.session_state.simulation_results
                 fig_static = sim.plot_rays()
                 st.pyplot(fig_static)
                 plt.close(fig_static)
-            except Exception as plot_ex:
-                st.error(f"Error drawing static plot: {plot_ex}")
-        else:
-            st.info("💡 Run a **Ray Tracing Simulation** first to generate and view ray paths.")
+            else:
+                st.info("💡 Run a **Ray Tracing Simulation** first.")
 
-    with tab_tl_grid:
-        if st.session_state.simulation_results is not None and st.session_state.solver_type == "bellhop":
-            st.markdown("#### Transmission Loss Field from Ray Density")
-            st.write("This map is generated by binning and smoothing ray density across range-depth bins, weighting by boundary reflection losses.")
-            try:
+        with tab_tl_grid:
+            if st.session_state.simulation_results is not None:
+                st.markdown("#### Transmission Loss Field from Ray Density")
                 sim = Simulation(sim_config_dict, mode=exec_mode)
                 sim.ray_paths = st.session_state.simulation_results
                 fig_tl = sim.plot_tl()
                 st.pyplot(fig_tl)
                 plt.close(fig_tl)
-            except Exception as plot_ex:
-                st.error(f"Error drawing TL plot: {plot_ex}")
-        else:
-            st.info("💡 Run a **Ray Tracing Simulation** first to compute and view the Transmission Loss field.")
-
-    with tab_tl_coherent:
-        if st.session_state.shd_computed_tl is not None:
-            st.markdown("#### Coherent Transmission Loss (Gaussian Beam Summation)")
-            st.write("This represents the phase-coherent acoustic field computed using physically accurate Gaussian Beam summation. It shows fine acoustic striations and interference patterns.")
-            
-            c_data = st.session_state.shd_computed_tl
-            TL_grid = c_data["TL"]
-            r_grid = c_data["r_grid"]
-            z_grid = c_data["z_grid"]
-            
-            # Matplotlib Imshow
-            fig, ax = plt.subplots(figsize=(12, 6))
-            vmin, vmax = get_auto_clim(TL_grid)
-            im = ax.imshow(
-                TL_grid.T, 
-                extent=[r_grid[0] / 1000.0, r_grid[-1] / 1000.0, st.session_state.depth, 0],
-                aspect='auto', 
-                cmap='jet_r',
-                vmin=vmin, 
-                vmax=vmax
-            )
-            plt.colorbar(im, label='Transmission Loss (dB)')
-            ax.set_xlabel('Range (km)')
-            ax.set_ylabel('Depth (m)')
-            ax.set_title(f"Coherent TL Field ({st.session_state.project_name})")
-            
-            st.pyplot(fig)
-            plt.close(fig)
-        else:
-            st.info("💡 Click **'Compute Coherent TL Field'** above to generate the full physical Gaussian Beam wave interference field.")
-
-    with tab_arrivals:
-        st.markdown("#### Multipath Arrivals & Impulse Response")
-        st.write("Analyze individual acoustic ray paths, travel times, and amplitudes reaching a specific receiver coordinate.")
-        
-        c_rx1, c_rx2 = st.columns(2)
-        with c_rx1:
-            rx_range = st.slider(
-                "Receiver Range Location (meters)", 
-                min_value=500.0, 
-                max_value=float(st.session_state.receivers_max_range), 
-                value=float(st.session_state.receivers_max_range * 0.75),
-                step=500.0
-            )
-        with c_rx2:
-            rx_depth = st.slider(
-                "Receiver Depth Location (meters)", 
-                min_value=1.0, 
-                max_value=float(st.session_state.depth - 2.0), 
-                value=float(st.session_state.depth * 0.5),
-                step=10.0
-            )
-            
-        run_arr = st.button("🔔 Analyze Arrivals at Receiver Location", type="primary", use_container_width=True)
-        
-        if run_arr:
-            if not import_success:
-                st.error("Cannot compute arrivals: `pyacoustics` module is not loaded correctly.")
             else:
-                with st.spinner("Calculating multipath arrivals..."):
-                    try:
-                        sim = Simulation(sim_config_dict, mode=exec_mode)
-                        # We must run the ray tracing first
-                        sim.run()
-                        arrivals = sim.run_arrivals(range_m=rx_range, depth_m=rx_depth)
-                        
-                        if not arrivals:
-                            st.warning("No ray paths intersected the receiver volume. Try widening the launch angles or increasing the number of beams.")
-                        else:
-                            st.success(f"Successfully calculated {len(arrivals)} multipath arrivals!")
-                            
-                            # Preprocess complex values to avoid serialization errors
-                            processed_arrivals = []
-                            for arr in arrivals:
-                                amp = complex(arr['amplitude'])
-                                processed_arrivals.append({
-                                    'tau': float(arr['tau']),
-                                    'amplitude_magnitude': abs(amp),
-                                    'amplitude_phase_deg': np.degrees(np.angle(amp)),
-                                    'amplitude_str': f"{amp.real:.3e} + {amp.imag:.3e}j",
-                                    'launch_angle': float(arr['launch_angle']),
-                                    'arrival_angle': float(arr['arrival_angle'])
-                                })
-                            
-                            # Convert arrivals to DataFrame
-                            arr_df = pd.DataFrame(processed_arrivals)
-                            
-                            # Interactive Scatter Plot of arrivals
-                            st.markdown("##### Arrival Impulse Response (Plotly)")
-                            fig_arr_plotly = go.Figure()
-                            
-                            # Stem lines for arrivals
-                            for idx, row in arr_df.iterrows():
-                                fig_arr_plotly.add_trace(go.Scatter(
-                                    x=[row['tau'], row['tau']],
-                                    y=[0, row['amplitude_magnitude']],
-                                    mode="lines",
-                                    line=dict(color="#10B981", width=2),
-                                    hoverinfo='none',
-                                    showlegend=False
-                                ))
-                            
-                            # Nodes for arrivals
-                            fig_arr_plotly.add_trace(go.Scatter(
-                                x=arr_df['tau'],
-                                y=arr_df['amplitude_magnitude'],
-                                mode="markers",
-                                marker=dict(
-                                    size=10,
-                                    color="#3B82F6",
-                                ),
-                                text=[f"Launch Angle: {r['launch_angle']:.2f}°<br>Arrival Angle: {r['arrival_angle']:.2f}°<br>Phase: {r['amplitude_phase_deg']:.1f}°" for _, r in arr_df.iterrows()],
-                                hoverinfo="x+y+text",
-                                name="Arrival Paths"
-                            ))
-                            
-                            fig_arr_plotly.update_layout(
-                                xaxis=dict(title=dict(text="Travel Time / Delay (seconds)", font=dict(color="#94a3b8")), gridcolor="rgba(255,255,255,0.05)", tickfont=dict(color="#94a3b8")),
-                                yaxis=dict(title=dict(text="Arrival Amplitude", font=dict(color="#94a3b8")), gridcolor="rgba(255,255,255,0.05)", tickfont=dict(color="#94a3b8")),
-                                paper_bgcolor="rgba(0,0,0,0)",
-                                plot_bgcolor="rgba(0,0,0,0)",
-                                height=400,
-                                margin=dict(l=10, r=10, t=10, b=10)
-                            )
-                            st.plotly_chart(fig_arr_plotly, use_container_width=True)
-                            
-                            # Table of top arrivals
-                            st.markdown("##### Tabular Path Analysis")
-                            arr_df_sorted = arr_df.sort_values(by="tau")
-                            st.dataframe(
-                                arr_df_sorted[['tau', 'amplitude_magnitude', 'amplitude_phase_deg', 'amplitude_str', 'launch_angle', 'arrival_angle']].style.format({
-                                    'tau': '{:.5f} s',
-                                    'amplitude_magnitude': '{:.3e}',
-                                    'amplitude_phase_deg': '{:.1f}°',
-                                    'launch_angle': '{:.2f}°',
-                                    'arrival_angle': '{:.2f}°',
-                                }),
-                                use_container_width=True
-                            )
-                    except Exception as arr_ex:
-                        st.error(f"Error computing arrivals: {arr_ex}")
-        else:
-            st.info("💡 Set receiver range and depth above, then click **'Analyze Arrivals'** to compute.")
+                st.info("💡 Run simulation first.")
 
-    with tab_yaml:
-        st.markdown("#### Exported YAML Configuration Schema")
-        st.write("This YAML schema matches the standard YAML configuration used by `acoustics-agent`.")
+        with tab_tl_coherent:
+            c_data = st.session_state.get('shd_computed_tl')
+            if c_data is not None:
+                st.markdown("#### Coherent Transmission Loss (Gaussian Beam Summation)")
+                fig_coh, ax = plt.subplots(figsize=(12, 6))
+                vmin, vmax = get_auto_clim(c_data["TL"])
+                ax.imshow(c_data["TL"].T, extent=[c_data["r_grid"][0]/1000, c_data["r_grid"][-1]/1000, st.session_state.depth, 0], aspect='auto', cmap='jet_r', vmin=vmin, vmax=vmax)
+                st.pyplot(fig_coh)
+                plt.close(fig_coh)
+            else:
+                st.info("💡 Click 'Compute Coherent TL' to generate field.")
+
+        with tab_arrivals:
+            st.markdown("#### Multipath Arrivals & Impulse Response")
+            st.write("Analyze individual acoustic ray paths, travel times, and amplitudes reaching a specific receiver coordinate.")
+            
+            c_rx1, c_rx2 = st.columns(2)
+            with c_rx1:
+                rx_range = st.slider("Receiver Range Location (meters)", min_value=500.0, max_value=float(st.session_state.receivers_max_range), value=float(st.session_state.receivers_max_range * 0.75), step=500.0)
+            with c_rx2:
+                rx_depth = st.slider("Receiver Depth Location (meters)", min_value=1.0, max_value=float(st.session_state.depth - 2.0), value=float(st.session_state.depth * 0.5), step=10.0)
+                
+            run_arr = st.button("🔔 Analyze Arrivals", type="primary", use_container_width=True)
+            
+            if run_arr:
+                if st.session_state.simulation_results is None:
+                    st.warning("Please run Ray Tracing Simulation first to generate paths.")
+                else:
+                    with st.spinner("Calculating multipath arrivals..."):
+                        try:
+                            sim = Simulation(sim_config_dict, mode=exec_mode)
+                            # Inject pre-computed ray paths to avoid re-running the full solver
+                            sim.ray_paths = st.session_state.simulation_results
+                            arrivals = sim.run_arrivals(range_m=rx_range, depth_m=rx_depth)
+                            if not arrivals:
+                                st.warning("No ray paths intersected the receiver volume.")
+                            else:
+                                st.success(f"Successfully calculated {len(arrivals)} arrivals!")
+                                # Simplified plotly arrivals plot
+                                fig_arr = go.Figure()
+                                for arr in arrivals:
+                                    amp_mag = abs(complex(arr['amplitude']))
+                                    fig_arr.add_trace(go.Scatter(x=[arr['tau'], arr['tau']], y=[0, amp_mag], mode="lines", line=dict(color="#10B981", width=2), showlegend=False))
+                                st.plotly_chart(fig_arr, use_container_width=True)
+                                
+                                # Process arrivals for display (Arrow/Pyarrow doesn't support complex numbers)
+                                display_arrivals = []
+                                for arr in arrivals:
+                                    amp = complex(arr['amplitude'])
+                                    display_arrivals.append({
+                                        'Delay (s)': float(arr['tau']),
+                                        'Magnitude': abs(amp),
+                                        'Phase (deg)': np.degrees(np.angle(amp)),
+                                        'Amplitude (Complex)': f"{amp.real:.2e} + {amp.imag:.2e}j",
+                                        'Launch Angle (deg)': float(arr.get('launch_angle', 0)),
+                                        'Arrival Angle (deg)': float(arr.get('arrival_angle', 0))
+                                    })
+                                
+                                st.dataframe(pd.DataFrame(display_arrivals), use_container_width=True)
+                        except Exception as arr_ex:
+                            st.error(f"Error computing arrivals: {arr_ex}")
+
+        with tab_yaml:
+            st.markdown("#### Exported YAML Configuration Schema")
+            st.code(yaml.dump(sim_config_dict, sort_keys=False), language="yaml")
+            st.download_button(label="💾 Download Configuration File (YAML)", data=yaml.dump(sim_config_dict, sort_keys=False), file_name=f"{st.session_state.project_name}.yaml", mime="text/yaml", use_container_width=True)
+
+    else:
+        # Kraken (Normal Modes) UI
+        tab_list = ["🌊 Modal TL Field", "📈 Mode Shapes", "🌈 Propagation Field", "📄 YAML Configuration"]
+        tabs = st.tabs(tab_list)
+        tab_tl_modal, tab_modes, tab_prop, tab_yaml = tabs
         
-        yaml_str = yaml.dump(sim_config_dict, sort_keys=False)
-        st.code(yaml_str, language="yaml")
-        
-        st.download_button(
-            label="💾 Download Configuration File (YAML)",
-            data=yaml_str,
-            file_name=f"{st.session_state.project_name.lower().replace(' ', '_')}.yaml",
-            mime="text/yaml",
-            use_container_width=True
-        )
+        with tab_tl_modal:
+            st.markdown("#### Modal Transmission Loss Field")
+            results = st.session_state.simulation_results
+            if results is not None and isinstance(results, dict) and "tl_grid" in results:
+                sim = Simulation(sim_config_dict, mode=exec_mode)
+                sim._tl_cache = (results['tl_grid'], results['r_bins'], results['z_bins'])
+                fig_tl_m = sim.plot_tl()
+                st.pyplot(fig_tl_m)
+                plt.close(fig_tl_m)
+            else:
+                st.info("💡 Run **Normal Mode Simulation** first.")
+                
+        with tab_modes:
+            st.markdown("#### Modal Eigenfunctions (Mode Shapes)")
+            results = st.session_state.simulation_results
+
+            if results is not None and isinstance(results, dict) and "modes" in results and len(results["modes"]) > 0:
+                modes = results["modes"]
+                # Use the modal depth grid if available, fallback to receiver grid
+                z_plot = results.get("z_bins_mod", results["z_bins"])
+                
+                try:
+                    # Robust handling for legacy vs native data structures
+                    modes_arr = np.asanyarray(modes)
+                    
+                    # If the data is (depth, modes) instead of (modes, depth), transpose it
+                    if modes_arr.ndim == 2:
+                        if modes_arr.shape[0] == len(z_plot) and modes_arr.shape[1] != len(z_plot):
+                            modes_arr = modes_arr.T
+                    
+                    fig_m, ax_m = plt.subplots(figsize=(10, 6))
+                    # Plot the first few modes for clarity
+                    num_to_plot = min(5, len(modes_arr))
+                    for i in range(num_to_plot):
+                        # Use real part; handle complex values from legacy solvers explicitly
+                        ax_m.plot(np.real(modes_arr[i]), z_plot, label=f"Mode {i+1}", linewidth=1.5)
+                    
+                    ax_m.set_ylim(max(z_plot), 0)
+                    ax_m.set_xlabel("Amplitude")
+                    ax_m.set_ylabel("Depth (m)")
+                    ax_m.set_title(f"First {num_to_plot} Modal Eigenfunctions")
+                    ax_m.legend()
+                    ax_m.grid(True, alpha=0.3)
+                    st.pyplot(fig_m)
+                    plt.close(fig_m)
+                except Exception as e:
+                    st.error(f"Error plotting mode shapes: {e}")
+            elif results is not None and isinstance(results, dict) and "modes" in results:
+                 st.warning(f"No modes were found in the output file. Check the phase speed limits or frequency.")
+            else:
+                st.info("💡 Run simulation to extract mode shapes.")
+                
+        with tab_prop:
+            st.markdown("#### Linear Acoustic Interference Field")
+            st.write("Visualizing the interference pattern (linear pressure magnitude) rather than log-scale loss.")
+            c_data = st.session_state.get('shd_computed_tl')
+            if c_data is not None:
+                fig_prop, ax = plt.subplots(figsize=(12, 6))
+                # Convert TL back to linear pressure to see interference fringes
+                pressure_linear = 10**(-c_data["TL"]/20.0)
+                
+                # Clip the maximum value to the 98th percentile to prevent the source singularity
+                # from washing out the entire field into blackness
+                vmax_clip = np.percentile(pressure_linear, 98)
+                
+                # Ensure no transpose here
+                im = ax.imshow(
+                    pressure_linear, 
+                    extent=[c_data["r_grid"][0]/1000, c_data["r_grid"][-1]/1000, st.session_state.depth, 0], 
+                    aspect='auto', cmap='magma', vmax=vmax_clip
+                )
+                plt.colorbar(im, label='Normalized Pressure (Clipped)')
+                ax.set_xlabel("Range (km)")
+                ax.set_ylabel("Depth (m)")
+                st.pyplot(fig_prop)
+                plt.close(fig_prop)
+            else:
+                st.info("💡 Field data not available.")
+
+        with tab_yaml:
+            st.markdown("#### Exported YAML Configuration Schema")
+            st.code(yaml.dump(sim_config_dict, sort_keys=False), language="yaml")
+            st.download_button(label="💾 Download Configuration File (YAML)", data=yaml.dump(sim_config_dict, sort_keys=False), file_name=f"{st.session_state.project_name}.yaml", mime="text/yaml", use_container_width=True)
 
     st.markdown("</div>", unsafe_allow_html=True)
